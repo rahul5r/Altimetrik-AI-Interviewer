@@ -71,6 +71,16 @@ export async function POST(req: Request) {
       
       const followUpsForThisQ = state.followUpsHistory[state.currentQuestionIndex] || [];
 
+      // FIX: Attribute answer to the last follow-up if pending
+      if (followUpsForThisQ.length > 0) {
+        const lastFollowUp = followUpsForThisQ[followUpsForThisQ.length - 1];
+        if (!lastFollowUp.a || lastFollowUp.a === '') {
+          console.log(`[SessionLoop] Attributing answer to follow-up: ${lastFollowUp.q.substring(0, 30)}...`);
+          lastFollowUp.a = message;
+          state.followUpsHistory[state.currentQuestionIndex] = followUpsForThisQ;
+        }
+      }
+
       // Call Live Evaluator
       console.log(`[SessionLoop] Calling Live Evaluator at ${internalAppUrl}/api/live-evaluate`);
       
