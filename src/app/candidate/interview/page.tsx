@@ -426,209 +426,20 @@ export default function InterviewRoom() {
     return Array.isArray(q.key_points) ? q.key_points : [];
   };
 
-  // ── Call Evaluator 1 (live coverage check) ───────────────────────
-  const callLiveEvaluator = async (
-    question: string,
-    answer: string,
-    keyPoints: string[],
-    followUpsHistory: { q: string, a: string }[],
-    allQuestions?: string[],
-    maxFollowUps?: number,
-    currentFollowUpCount?: number
-  ) => {
+  // ── Session Orchestrator (Central Controller) ───────────────────────
+  const orchestrateSession = async (action: 'start' | 'loop' | 'end', params: any) => {
     try {
-      const res = await fetch('/api/live-evaluate', {
+      const res = await fetch(`/api/session/${action}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question,
-          candidateAnswer: answer,
-          keyPoints,
-          followUpsHistory,
-          ...(allQuestions ? { allQuestions } : {}),
-          maxFollowUps,
-          currentFollowUpCount
-        }),
+        body: JSON.stringify(params),
       });
+      if (!res.ok) throw new Error(`Session ${action} failed: ${res.statusText}`);
       return await res.json();
     } catch (e) {
-      sendLogToCmd('ERROR', '[LiveEvaluate] Error', { error: String(e) });
-      return { decision: 'move_next', covered_points: [], missed_points: keyPoints, coverage_percentage: 0 };
+      sendLogToCmd('ERROR', `[Orchestrator] ${action} failed`, { error: String(e) });
+      return { error: String(e) };
     }
-  };
-
-  // ── State Persistence Logic ──
-  const saveInterviewState = async () => {
-    const cid = localStorage.getItem('candidate_id');
-    if (!cid) return;
-
-    const state = {
-      transcript: transcriptRef.current,
-      questionIndex: questionIndex.current,
-      candidateAnswers: candidateAnswers.current,
-      coveragePerQuestion: coveragePerQuestion.current,
-      questionsWithFollowUps: questionsWithFollowUps.current,
-      followUpCountForCurrentQ: followUpCountForCurrentQ.current,
-      segmentIndex: segmentIndexRef.current,
-      sessionCount: sessionCountRef.current,
-    };
-
-    try {
-      await supabase.from('candidates').update({
-        session_state: state,
-      }).eq('id', cid);
-    } catch (e) {
-      sendLogToCmd('ERROR', 'Failed to save progress to DB', { error: String(e) });
-    }
-  };
-
-  // ── Ask the Interviewer for next response ────────────────────────
-  const askInterviewer = async (currentTranscript: any[], followUpInstruction?: string, expectedNextQuestion?: string, repeatQuestionText?: string, isResumeFlag?: boolean) => {
-    try {
-      const res = await fetch('/api/interviewer', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'ask_next',
-          questionBank: interview.question_bank,
-          transcript: currentTranscript,
-          candidateName: candidate?.name,
-          isIntroPhase: questionIndex.current < 0,
-          currentQuestionIndex: questionIndex.current,
-          ...(followUpInstruction ? { followUpInstruction } : {}),
-          ...(expectedNextQuestion ? { nextQuestionText: expectedNextQuestion } : {}),
-          ...(repeatQuestionText ? { repeatQuestionText } : {}),
-          isResume: isResumeFlag === true,
-        }),
-      });
-
-      if (!res.ok) {
-        sendLogToCmd('ERROR', '[Interviewer] HTTP error', { status: res.status, text: res.statusText });
-        throw new Error(`HTTP error ${res.status}`);
-      }
-
-      const data = await res.json();
-
-      // Check if API returned an error field
-      if (data.error) {
-        sendLogToCmd('ERROR', '[Interviewer] API error', { error: data.error });
-        throw new Error(`API error: ${data.error}`);
-      }
-
-      return data;
-    } catch (e) {
-      sendLogToCmd('ERROR', '[Interviewer] Fallback triggered due to error', { error: String(e) });
-      // Fallback: manually proceed to the next question
-      const nextQIndex = questionIndex.current + 1;
-      const bank = interview?.question_bank || [];
-      if (nextQIndex < bank.length) {
-        const fallbackQuestion = typeof bank[nextQIndex] === 'string' ? bank[nextQIndex] : bank[nextQIndex].question;
-        return {
-          response: `I apologize, there was a connection issue. Let's continue. ${fallbackQuestion}`,
-          isCompleted: false,
-          currentQuestionIndex: nextQIndex + 1
-        };
-      } else {
-        return {
-          response: 'I apologize, there was a connection issue. We have finished all questions. Thank you for your time!',
-          isCompleted: true,
-          currentQuestionIndex: nextQIndex + 1
-        };
-      }
-    }
-  };
-
-  // ── Main flow: Ask the next question ─────────────────────────────
-  const askNextQuestion = async (currentTranscript = transcriptRef.current, isResume = false) => {
-    // Fully LLM-driven: we no longer pass the expected next question text.
-    // The AI scans the transcript and selects the next question itself.
-    const data = await askInterviewer(currentTranscript, undefined, undefined, undefined, isResume);
-
-    const bankLength = interview?.question_bank?.length || 0;
-    const isActuallyComplete = data.isCompleted && (questionIndex.current >= bankLength - 1);
-
-    if (isActuallyComplete) {
-      setIsCompleted(true);
-      const cleanedResponse = sanitizeAIOutput(data.response);
-      const finalMsg = { speaker: 'AI' as 'AI', text: cleanedResponse };
-      transcriptRef.current.push(finalMsg);
-      setTranscript([...transcriptRef.current]);
-      await speak(cleanedResponse);
-      await handleEndInterview();
-      return;
-    } else if (data.isCompleted) {
-      // The LLM hallucinated an early end. We override it.
-      sendLogToCmd('WARN', '[Interviewer] Hallucinated early completion detected and intercepted.');
-      data.isCompleted = false;
-      if (questionIndex.current < bankLength - 1) {
-        const nextQIndex = questionIndex.current + 1;
-        const nextQ = interview.question_bank[nextQIndex];
-        const nextQText = typeof nextQ === 'string' ? nextQ : nextQ?.question;
-        data.response = `Great, let's move on. ${nextQText}`;
-        data.currentQuestionIndex = nextQIndex + 1;
-      }
-    }
-
-    // Trust the LLM's currentQuestionIndex to avoid drift
-    // The LLM tracks which question it's asking based on transcript history
-    if (data.currentQuestionIndex !== null && data.currentQuestionIndex !== undefined && data.currentQuestionIndex > 0) {
-      questionIndex.current = data.currentQuestionIndex - 1;
-    } else if (!isResume && questionIndex.current >= 0) {
-      // Fallback: only increment if LLM didn't provide an index AND we're not resuming
-      questionIndex.current = questionIndex.current + 1;
-    }
-
-    const cleanedResponse = sanitizeAIOutput(data.response);
-    const aiMsg = { speaker: 'AI' as 'AI', text: cleanedResponse };
-    transcriptRef.current.push(aiMsg);
-    setTranscript([...transcriptRef.current]);
-
-    // Track the question
-    lastQuestionText.current = cleanedResponse;
-    followUpCountForCurrentQ.current = 0;  // reset follow-up counter for new question
-    candidateAnswers.current.push({ q: cleanedResponse, a: '', followUps: [] });
-
-    await saveInterviewState();
-    await speak(cleanedResponse);
-    startListening();
-  };
-
-  // ── Ask a follow-up (Evaluator 1 decided) ────────────────────────
-  const askFollowUp = async (followUpQuestion: string, currentTranscript: any[]) => {
-    const data = await askInterviewer(currentTranscript, followUpQuestion);
-
-    const cleanedResponse = sanitizeAIOutput(data.response);
-    const aiMsg = { speaker: 'AI' as 'AI', text: cleanedResponse };
-    transcriptRef.current.push(aiMsg);
-    setTranscript([...transcriptRef.current]);
-
-    if (followUpCountForCurrentQ.current === 0) {
-      questionsWithFollowUps.current += 1;
-    }
-    followUpCountForCurrentQ.current += 1;
-
-    // Track in current technical question
-    if (candidateAnswers.current.length > 0) {
-      const lastEntry = candidateAnswers.current[candidateAnswers.current.length - 1];
-      if (!lastEntry.followUps) lastEntry.followUps = [];
-      lastEntry.followUps.push({ q: cleanedResponse, a: '' });
-    }
-
-    await saveInterviewState();
-    await speak(cleanedResponse);
-    startListening();
-  };
-
-  // ── Repeat question (candidate asked to repeat, zero follow-up cost) ──
-  const askRepeatQuestion = async (currentQuestionText: string, currentTranscript: any[], isResumeFlag = false) => {
-    const data = await askInterviewer(currentTranscript, undefined, undefined, currentQuestionText, isResumeFlag);
-    const cleanedResponse = sanitizeAIOutput(data.response);
-    const aiMsg = { speaker: 'AI' as 'AI', text: cleanedResponse };
-    transcriptRef.current.push(aiMsg);
-    setTranscript([...transcriptRef.current]);
-    // NOTE: followUpCountForCurrentQ is intentionally NOT incremented here
-    await speak(cleanedResponse);
-    startListening();
   };
 
   const startListening = () => {
@@ -677,86 +488,38 @@ export default function InterviewRoom() {
 
     const finalAnswer = finalAnswerText || '(No response audible)';
 
-    // Add to transcript
+    // Add to transcript locally
     const candidateMsg = { speaker: 'Candidate' as 'Candidate', text: finalAnswer };
     transcriptRef.current.push(candidateMsg);
     setTranscript([...transcriptRef.current]);
 
-    // Fill the answer for the last question the AI asked
-    if (candidateAnswers.current.length > 0) {
-      const lastEntry = candidateAnswers.current[candidateAnswers.current.length - 1];
-      if (followUpCountForCurrentQ.current > 0 && lastEntry.followUps && lastEntry.followUps.length > 0) {
-        lastEntry.followUps[lastEntry.followUps.length - 1].a = finalAnswer;
+    // ── Call Orchestrator Loop ─────────────────────────────────────
+    setSavingStatus('Agent is processing your answer...');
+    const data = await orchestrateSession('loop', { candidateId: candidate.id, message: finalAnswer });
+    
+    if (data.response) {
+      const cleaned = sanitizeAIOutput(data.response);
+      transcriptRef.current.push({ speaker: 'AI', text: cleaned });
+      setTranscript([...transcriptRef.current]);
+      
+      if (data.isCompleted) {
+        setIsCompleted(true);
+        await speak(cleaned);
+        await handleEndInterview();
       } else {
-        lastEntry.a = finalAnswer;
+        await speak(cleaned);
+        startListening();
       }
+    } else {
+      // HANDLE ERROR / SILENCE
+      const errorMsg = data.error || "I'm having trouble connecting to my brain right now. One moment...";
+      const aiMsg = { speaker: 'AI' as const, text: errorMsg };
+      transcriptRef.current.push(aiMsg);
+      setTranscript([...transcriptRef.current]);
+      await speak(errorMsg);
+      // Don't auto-restart listening on error to prevent infinite error loops
+      setSavingStatus('');
     }
-
-    // ── Repeat/Rephrase Detection (bypass Evaluator 1, zero follow-up cost) ──
-    const REPEAT_PATTERNS = [
-      /\brepeat\b/i, /\bsay that again\b/i, /\brephrase\b/i,
-      /\bcan you repeat\b/i, /\bwhat did you say\b/i, /\bpardon\b/i,
-      /\bsorry.{0,20}(repeat|again|question)/i, /\bcould you (repeat|say|ask)/i,
-      /\belaborate\b/i, /\bcan you elaborate\b/i, /\bcan you explain\b/i,
-      /\bcould you elaborate\b/i, /\bcould you explain\b/i, /\bwhat do you mean\b/i,
-    ];
-    const isRepeatRequest = REPEAT_PATTERNS.some(p => p.test(finalAnswer));
-
-    if (isRepeatRequest && questionIndex.current >= 0) {
-      sendLogToCmd('INFO', '[Repeat Detected] Candidate asked to repeat the question. Bypassing Evaluator 1.');
-      const currentQ = interview.question_bank[questionIndex.current];
-      const currentQText = typeof currentQ === 'string' ? currentQ : currentQ?.question || '';
-      await askRepeatQuestion(currentQText, transcriptRef.current);
-      return;
-    }
-
-    await saveInterviewState();
-
-    // ── Evaluator 1: Check key point coverage ─────────────────────
-    const keyPoints = questionIndex.current >= 0 ? getKeyPointsForQuestion(questionIndex.current) : [];
-
-    if (keyPoints.length > 0 && questionIndex.current >= 0) {
-      // There are key points to check
-      const lastEntry = candidateAnswers.current[candidateAnswers.current.length - 1];
-      const originalQuestion = interview.question_bank[questionIndex.current]?.question || lastEntry.q;
-
-      const allQuestions = interview.question_bank.map((q: any) => typeof q === 'string' ? q : q.question || '');
-
-      const maxFollowUps = getFollowUpDepth(questionIndex.current);
-
-      const liveResult = await callLiveEvaluator(
-        originalQuestion,
-        lastEntry.a || '',
-        keyPoints,
-        lastEntry.followUps || [],
-        allQuestions,
-        maxFollowUps,
-        followUpCountForCurrentQ.current
-      );
-
-      sendLogToCmd('INFO', '[Evaluator 1] Decision Details', { decision: liveResult.decision, coverage: liveResult.coverage_percentage });
-
-      // Track coverage
-      coveragePerQuestion.current.push({
-        questionIndex: questionIndex.current,
-        coverage: liveResult.coverage_percentage || 0,
-      });
-
-      const canAskFollowUp = followUpCountForCurrentQ.current < maxFollowUps;
-
-      if (liveResult.decision === 'follow_up' && canAskFollowUp && liveResult.follow_up_question) {
-        // Evaluator 1 says: ask a follow-up (within allowed depth)
-        await askFollowUp(liveResult.follow_up_question, transcriptRef.current);
-        return;
-      }
-
-      // decision is 'move_next' or 'skip' or it was already a follow-up → proceed
-    }
-
-    // No key points, or Evaluator 1 said move on / max follow-ups reached → next question
-    followUpsPerQuestion.current.push({ questionIndex: questionIndex.current, count: followUpCountForCurrentQ.current });
-    followUpCountForCurrentQ.current = 0;
-    await askNextQuestion(transcriptRef.current);
   };
 
   const handleShowInstructions = () => {
@@ -837,92 +600,49 @@ export default function InterviewRoom() {
     }
 
     if (isResumingRef.current) {
-      // Increment Session Count on actual resumption
-      sessionCountRef.current += 1;
-
-      // Record a session break in the transcript with timestamp
-      const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const breakMsg = {
-        speaker: 'System' as any,
-        text: `[SESSION INTERRUPTED - RESUMED AT ${timestamp}]`,
-        timestamp,
-        isBreak: true,
-        sessionNo: sessionCountRef.current
-      };
-      transcriptRef.current.push(breakMsg);
-      setTranscript([...transcriptRef.current]);
-
-      // Also record in the saved structured transcript
-      candidateAnswers.current.push({ ...breakMsg } as any);
-      await saveInterviewState(); // Persist the incremented session count
-
-      const transcriptCopy = [...transcriptRef.current].filter((m: any) => m.speaker === 'Candidate' || m.speaker === 'AI');
-      const lastMessage = transcriptCopy.length > 0 ? transcriptCopy[transcriptCopy.length - 1] : null;
-
-      if (lastMessage && lastMessage.speaker === 'Candidate') {
-        const finalAnswer = lastMessage.text;
-
-        // ── Evaluator 1: Check key point coverage for the resumed answer ─────────────────────
-        const keyPoints = questionIndex.current >= 0 ? getKeyPointsForQuestion(questionIndex.current) : [];
-        if (keyPoints.length > 0 && questionIndex.current >= 0) {
-          const lastEntry = [...candidateAnswers.current].reverse().find((e: any) => !e.isBreak && e.q);
-          const originalQuestion = interview?.question_bank[questionIndex.current]?.question || (lastEntry ? lastEntry.q : '');
-
-          const allQuestions = interview?.question_bank?.map((q: any) => typeof q === 'string' ? q : q.question || '') || [];
-
-          const maxFollowUps = getFollowUpDepth(questionIndex.current);
-
-          const liveResult = await callLiveEvaluator(
-            originalQuestion,
-            lastEntry?.a || '',
-            keyPoints,
-            lastEntry?.followUps || [],
-            allQuestions,
-            maxFollowUps,
-            followUpCountForCurrentQ.current
-          );
-
-          sendLogToCmd('INFO', '[Evaluator 1 - Resume] Decision', { decision: liveResult.decision });
-
-          coveragePerQuestion.current.push({
-            questionIndex: questionIndex.current,
-            coverage: liveResult.coverage_percentage || 0,
-          });
-
-          const canAskFollowUp = followUpCountForCurrentQ.current < maxFollowUps;
-
-          if (liveResult.decision === 'follow_up' && canAskFollowUp && liveResult.follow_up_question) {
-            await askFollowUp(liveResult.follow_up_question, transcriptRef.current);
-            isResumingRef.current = false;
-            return;
+      // Resume logic simplified: Orchestrator handles the state retrieval
+      const data = await orchestrateSession('start', { candidateId: candidate.id });
+      if (data.success && data.sessionState) {
+        const remoteTranscript = data.sessionState.transcript || [];
+        setTranscript(remoteTranscript);
+        transcriptRef.current = remoteTranscript;
+        
+        const lastMsg = remoteTranscript.length > 0 ? remoteTranscript[remoteTranscript.length - 1] : null;
+        if (lastMsg && lastMsg.speaker === 'AI') {
+          await speak(lastMsg.text);
+          startListening();
+        } else {
+          // If candidate was last or just started, trigger loop with empty message
+          const loopData = await orchestrateSession('loop', { candidateId: candidate.id, message: '' });
+          if (loopData?.response) {
+            const cleaned = sanitizeAIOutput(loopData.response);
+            const aiMsg = { speaker: 'AI' as const, text: cleaned };
+            transcriptRef.current.push(aiMsg);
+            setTranscript([...transcriptRef.current]);
+            await speak(cleaned);
+            startListening();
+          } else {
+            console.error('[Start] Initial loop failed', loopData);
           }
         }
-
-        // If no follow up, move to next question
-        followUpsPerQuestion.current.push({ questionIndex: questionIndex.current, count: followUpCountForCurrentQ.current });
-        followUpCountForCurrentQ.current = 0;
-        await askNextQuestion(transcriptRef.current);
-
-      } else if (lastMessage && lastMessage.speaker === 'AI') {
-        sendLogToCmd('INFO', 'Resuming session: Repeating last AI question');
-        await askRepeatQuestion(lastMessage.text, transcriptRef.current, true);
-      } else {
-        await askNextQuestion(transcriptRef.current, true);
       }
-
       isResumingRef.current = false;
     } else {
-      // Start of first session
-      const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      candidateAnswers.current.push({
-        isBreak: true,
-        sessionNo: 1,
-        timestamp,
-        speaker: 'System' as any,
-        text: `[SESSION 01 STARTED AT ${timestamp}]`
-      } as any);
-
-      await askNextQuestion();
+      // New session start
+      const data = await orchestrateSession('start', { candidateId: candidate.id });
+      if (data.success) {
+        const loopData = await orchestrateSession('loop', { candidateId: candidate.id, message: '' });
+        if (loopData?.response) {
+          const cleaned = sanitizeAIOutput(loopData.response);
+          const aiMsg = { speaker: 'AI' as const, text: cleaned };
+          transcriptRef.current.push(aiMsg);
+          setTranscript([...transcriptRef.current]);
+          await speak(cleaned);
+          startListening();
+        } else {
+          console.error('[Start] Initial loop failed for new session', loopData);
+        }
+      }
     }
   };
 
@@ -943,91 +663,20 @@ export default function InterviewRoom() {
       await Promise.all(Array.from(pendingUploadsRef.current));
     }
 
-    const finalVideoUrl = `interview-videos/${candidate.id}/`;
-
-    // 3. Prepare metrics
-    const totalQuestions = interview?.question_bank?.length || 1;
-    const coverages = coveragePerQuestion.current;
-    const avgCoverage = coverages.length > 0
-      ? coverages.reduce((sum, c) => sum + c.coverage, 0) / coverages.length
-      : 0;
-
-    const coverageData = {
-      average_coverage: avgCoverage,
-      per_question: coverages,
-    };
-
-    const followUpData = {
-      questions_with_follow_ups: questionsWithFollowUps.current,
-      per_question: followUpsPerQuestion.current,
-      total_questions: totalQuestions,
-    };
-
-    // 4. Call Evaluator 2
-    let evaluationResult: any = {};
-    try {
-      setSavingStatus('AI is evaluating your session...');
-      const res = await fetch('/api/evaluate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          questionBank: interview.question_bank,
-          previousContext: transcriptRef.current,
-          coverageData,
-          followUpData,
-          candidateName: candidate.name,
-          candidateEmail: candidate.email
-        })
-      });
-      const data = await res.json();
-      if (data.evaluation) evaluationResult = data.evaluation;
-    } catch (e) {
-      sendLogToCmd('ERROR', '[Evaluator 2] Failed', { error: String(e) });
-    }
-
-    const finalEvaluation = {
-      ...evaluationResult,
-      security_violations: { tab_switches: tabSwitchCount, fullscreen_exits: fullscreenExitCount }
-    };
-
-    // 5. Save Results
-    try {
-      await supabase.from('results').insert([{
-        candidate_id: candidate.id,
-        interview_id: interview.id,
-        evaluation: finalEvaluation,
-        transcript_data: { full_transcript: candidateAnswers.current.filter((item) => item.a !== '' || item.isBreak) },
-        video_url: finalVideoUrl
-      }]);
-
-      setSavingStatus('Finalizing your video recording...');
-      // 6. Trigger Video Stitching Pipeline on candidate side
-      try {
-        await fetch('/api/trigger-stitch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ candidateId: candidate.id })
-        });
-      } catch (err) {
-        sendLogToCmd('ERROR', 'Failed to trigger video stitch', { error: String(err) });
-      }
-
+    // 3. Call Orchestrator End
+    setSavingStatus('AI is finalizing your results...');
+    const data = await orchestrateSession('end', { candidateId: candidate.id });
+    
+    if (data.success) {
       setSavingStatus('Interview completed successfully.');
-
-      // 7. Cleanup candidate record
-      await supabase.from('candidates').update({
-        session_state: {},
-        s3_uploaded_parts: []
-      }).eq('id', candidate.id);
-
       sessionStorage.setItem('interview_done', 'true');
       isInterviewActive.current = false;
       streamRef.current?.getTracks().forEach(t => t.stop());
 
       if (document.exitFullscreen) document.exitFullscreen().catch(() => { });
       window.location.reload();
-    } catch (err) {
-      sendLogToCmd('ERROR', 'Failed to save results', { error: String(err) });
+    } else {
+      sendLogToCmd('ERROR', 'Failed to end session via orchestrator', { error: data.error });
       window.location.reload();
     }
   };
@@ -1233,13 +882,13 @@ export default function InterviewRoom() {
             </h3>
           </div>
           <div className="flex-1 overflow-y-auto p-6 space-y-6">
-            {transcript.length === 0 && !currentAnswer && (
+            {(transcript || []).length === 0 && !currentAnswer && (
               <div className="h-full flex flex-col items-center justify-center opacity-30 text-slate-400 p-8">
                 <Mic size={40} className="mb-4" />
                 <p className="text-sm font-medium">Interview haven't started yet</p>
               </div>
             )}
-            {transcript.map((msg, i) => (
+            {(transcript || []).map((msg, i) => (
               <div key={i} className={`flex flex-col ${msg.speaker === 'Candidate' ? 'items-end' : 'items-start'} animate-in slide-in-from-bottom-2 duration-200`}>
                 <span className="text-[10px] uppercase font-bold text-slate-400 mb-1.5 px-2 tracking-widest">
                   {msg.speaker === 'AI' ? 'Alti' : (candidate?.name || 'Candidate')}
