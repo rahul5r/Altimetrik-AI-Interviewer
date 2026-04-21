@@ -109,6 +109,14 @@ export default function CreateTest() {
         await scoreCandidateAtIndex(i);
       }
     }
+
+    setCandidates((prev) => {
+      return [...prev].sort((a, b) => {
+        const scoreA = typeof a.score === 'number' ? a.score : 0;
+        const scoreB = typeof b.score === 'number' ? b.score : 0;
+        return scoreB - scoreA;
+      });
+    });
   };
 
   const handleJDUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -490,54 +498,54 @@ export default function CreateTest() {
 
         {/* Job Description Section */}
         <section className="bg-white border border-slate-200 rounded-[2.5rem] p-10 shadow-sm relative overflow-hidden">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-                <div>
-                  <h2 className="text-xl font-bold text-slate-900 flex items-center gap-3">
-                     <FileSpreadsheet size={24} className="text-blue-500" />
-                     Job Description
-                  </h2>
-                  <p className="text-sm text-slate-500 font-medium mt-2">Upload JD file in <span className="text-slate-900 font-bold">PDF, TXT, or DOCX</span> format.</p>
-                </div>
-
-                <label className="cursor-pointer bg-slate-900 hover:bg-black px-8 py-4 rounded-2xl flex items-center gap-3 transition-all active:scale-95 shadow-xl text-white">
-                    {jdUploading ? <Loader2 size={20} className="animate-spin" /> : <Upload size={20} />}
-                    <span className="font-bold text-sm">{jdUploading ? 'Uploading JD...' : 'Upload JD'}</span>
-                    <input type="file" accept=".pdf,.txt,.docx" className="hidden" onChange={handleJDUpload} disabled={jdUploading} />
-                </label>
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+            <div>
+              <h2 className="text-xl font-bold text-slate-900 flex items-center gap-3">
+                <FileSpreadsheet size={24} className="text-blue-500" />
+                Job Description
+              </h2>
+              <p className="text-sm text-slate-500 font-medium mt-2">Upload JD file in <span className="text-slate-900 font-bold">PDF, TXT, or DOCX</span> format.</p>
             </div>
 
-            {jdPreviewUrl && (
-              <div className="mt-6 border border-slate-200 rounded-2xl overflow-hidden bg-slate-50">
-                <button
-                  type="button"
-                  onClick={() => setShowJdPreview((prev) => !prev)}
-                  className="w-full px-4 py-3 border-b border-slate-200 bg-white flex items-center justify-between gap-3"
-                >
-                  <p className="text-xs font-black text-slate-500 uppercase tracking-widest">JD Preview</p>
-                  <span className="text-slate-500">
-                    {showJdPreview ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                  </span>
-                </button>
+            <label className="cursor-pointer bg-slate-900 hover:bg-black px-8 py-4 rounded-2xl flex items-center gap-3 transition-all active:scale-95 shadow-xl text-white">
+              {jdUploading ? <Loader2 size={20} className="animate-spin" /> : <Upload size={20} />}
+              <span className="font-bold text-sm">{jdUploading ? 'Uploading JD...' : 'Upload JD'}</span>
+              <input type="file" accept=".pdf,.txt,.docx" className="hidden" onChange={handleJDUpload} disabled={jdUploading} />
+            </label>
+          </div>
 
-                {showJdPreview && (
-                  <>
-                    {jdMimeType === 'application/pdf' ? (
-                      <iframe
-                        src={jdPreviewUrl}
-                        title="JD Preview"
-                        className="w-full h-[420px] bg-white"
-                      />
-                    ) : jdMimeType === 'text/plain' ? (
-                      <div className="p-4 bg-white">
-                        <pre className="text-sm text-slate-700 whitespace-pre-wrap break-words max-h-[420px] overflow-auto">{jdPreviewText || 'No preview available.'}</pre>
-                      </div>
-                    ) : (
-                      <div className="p-4 bg-white text-sm text-slate-700 max-h-[420px] overflow-auto leading-relaxed" dangerouslySetInnerHTML={{ __html: jdPreviewHtml || '<p>No preview available.</p>' }} />
-                    )}
-                  </>
-                )}
-              </div>
-            )}
+          {jdPreviewUrl && (
+            <div className="mt-6 border border-slate-200 rounded-2xl overflow-hidden bg-slate-50">
+              <button
+                type="button"
+                onClick={() => setShowJdPreview((prev) => !prev)}
+                className="w-full px-4 py-3 border-b border-slate-200 bg-white flex items-center justify-between gap-3"
+              >
+                <p className="text-xs font-black text-slate-500 uppercase tracking-widest">JD Preview</p>
+                <span className="text-slate-500">
+                  {showJdPreview ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                </span>
+              </button>
+
+              {showJdPreview && (
+                <>
+                  {jdMimeType === 'application/pdf' ? (
+                    <iframe
+                      src={jdPreviewUrl}
+                      title="JD Preview"
+                      className="w-full h-[420px] bg-white"
+                    />
+                  ) : jdMimeType === 'text/plain' ? (
+                    <div className="p-4 bg-white">
+                      <pre className="text-sm text-slate-700 whitespace-pre-wrap break-words max-h-[420px] overflow-auto">{jdPreviewText || 'No preview available.'}</pre>
+                    </div>
+                  ) : (
+                    <div className="p-4 bg-white text-sm text-slate-700 max-h-[420px] overflow-auto leading-relaxed" dangerouslySetInnerHTML={{ __html: jdPreviewHtml || '<p>No preview available.</p>' }} />
+                  )}
+                </>
+              )}
+            </div>
+          )}
         </section>
 
         {/* Question Bank Section */}

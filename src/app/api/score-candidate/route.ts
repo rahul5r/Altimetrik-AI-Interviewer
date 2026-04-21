@@ -7,11 +7,11 @@ const region = process.env.S3_BUCKET_REGION || process.env.AWS_REGION || process
 
 const sharedCredentials =
   (process.env.AWS_ACCESS_KEY_ID || process.env.ACCESS_KEY_ID) &&
-  (process.env.AWS_SECRET_ACCESS_KEY || process.env.SECRET_ACCESS_KEY)
+    (process.env.AWS_SECRET_ACCESS_KEY || process.env.SECRET_ACCESS_KEY)
     ? {
-        accessKeyId: (process.env.AWS_ACCESS_KEY_ID || process.env.ACCESS_KEY_ID) as string,
-        secretAccessKey: (process.env.AWS_SECRET_ACCESS_KEY || process.env.SECRET_ACCESS_KEY) as string,
-      }
+      accessKeyId: (process.env.AWS_ACCESS_KEY_ID || process.env.ACCESS_KEY_ID) as string,
+      secretAccessKey: (process.env.AWS_SECRET_ACCESS_KEY || process.env.SECRET_ACCESS_KEY) as string,
+    }
     : undefined;
 
 const s3Client = new S3Client({
